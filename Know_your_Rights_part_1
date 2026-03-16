@@ -1,0 +1,340 @@
+# 🏛️ KnowRights COMPLETE - PART 1/2
+
+**Core Analysis System**
+
+---
+
+## What's in Part 1:
+1. ✅ Installation & Setup
+2. ✅ Document Extraction (PDF/TXT)
+3. ✅ Language Detection (7 languages)
+4. ✅ Risk Detection Engine
+5. ✅ Legal Knowledge Base + RAG
+6. ✅ Gemini AI Integration
+7. ✅ Basic Contract Analysis
+
+**Part 2 will have:** Interactive HTML, Q&A Chat, Advanced Features
+
+---
+## 📦 INSTALLATION
+%%capture
+# Step 1: Clean install
+!pip uninstall -y httpx huggingface-hub sentence-transformers 2>/dev/null
+
+# Step 2: Install compatible versions
+!pip install httpx==0.24.1
+!pip install huggingface-hub==0.20.0
+
+# Step 3: Install everything else
+!pip install google-generativeai pdfplumber faiss-cpu
+!pip install sentence-transformers langdetect deep-translator
+!pip install numpy tqdm
+
+print("✅ Installation complete!")
+# RESTART RUNTIME (Run once, then skip)
+import os, time
+print("⚠️ Restarting... After restart, skip installation cells.")
+time.sleep(2)
+os.kill(os.getpid(), 9)
+## 📚 IMPORTS
+import os, re, json, time, hashlib
+import numpy as np
+from pathlib import Path
+from dataclasses import dataclass
+from typing import List, Dict, Optional
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+
+import pdfplumber
+from langdetect import detect, LangDetectException
+from deep_translator import GoogleTranslator
+from sentence_transformers import SentenceTransformer
+import faiss
+import google.generativeai as genai
+from tqdm.auto import tqdm
+
+print("✅ All libraries imported!")
+## 🔑 CONFIGURATION
+# Get API key
+try:
+    from google.colab import userdata
+    GEMINI_API_KEY = userdata.get('GEMINI_API_KEY')
+    print("✅ Loaded from Colab Secrets")
+except:
+    GEMINI_API_KEY = input("Enter Gemini API key: ")
+
+genai.configure(api_key=GEMINI_API_KEY)
+
+class Config:
+    GEMINI_MODEL = "gemini-2.0-flash-exp"
+    EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+    MAX_CONTEXT_CHUNKS = 5
+    MAX_OUTPUT_TOKENS = 1500
+
+print(f"✅ Using {Config.GEMINI_MODEL}")
+## 📄 DOCUMENT EXTRACTION
+def extract_text(file_path: str) -> str:
+    """Extract from PDF or TXT"""
+    path = Path(file_path)
+    
+    if path.suffix.lower() == '.pdf':
+        text_parts = []
+        with pdfplumber.open(file_path) as pdf:
+            for page in tqdm(pdf.pages, desc="Extracting"):
+                if page.extract_text():
+                    text_parts.append(page.extract_text())
+        return "\n\n".join(text_parts)
+    else:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return f.read()
+
+print("✅ Document extractor ready")
+## 🌍 LANGUAGE HANDLING
+def detect_language(text: str) -> str:
+    try:
+        return detect(text) if detect(text) in ['en','hi','ta','te','bn','mr','gu'] else 'en'
+    except:
+        return 'en'
+
+def translate_text(text: str, source: str, target: str) -> str:
+    if source == target:
+        return text
+    try:
+        return GoogleTranslator(source=source, target=target).translate(text)
+    except:
+        return text
+
+print("✅ Language tools ready")
+## 🚨 RISK DETECTION
+@dataclass
+class Risk:
+    level: str
+    category: str
+    description: str
+    suggestion: str
+
+RISK_PATTERNS = [
+    {"level": "CRITICAL", "category": "Unlimited Liability",
+     "patterns": [r"unlimited\s+liability", r"indemnify.*?all\s+claims"],
+     "description": "Unlimited financial risk",
+     "suggestion": "Cap at contract value"},
+    {"level": "CRITICAL", "category": "Irrevocable",
+     "patterns": [r"irrevocable", r"cannot.*?terminated"],
+     "description": "Cannot exit agreement",
+     "suggestion": "Add termination clause"},
+    {"level": "HIGH", "category": "Unilateral Termination",
+     "patterns": [r"terminate.*?without\s+cause", r"sole\s+discretion"],
+     "description": "Can terminate anytime",
+     "suggestion": "Request notice period"},
+    {"level": "HIGH", "category": "Non-Compete",
+     "patterns": [r"non-compete", r"not\s+compete"],
+     "description": "Restricts employment",
+     "suggestion": "Limit to 1-2 years"},
+    {"level": "MEDIUM", "category": "Auto-Renewal",
+     "patterns": [r"automatically\s+renew"],
+     "description": "Renews unless cancelled",
+     "suggestion": "Mark calendar"},
+    {"level": "MEDIUM", "category": "IP Ownership",
+     "patterns": [r"intellectual\s+property.*?belong"],
+     "description": "Transfers IP rights",
+     "suggestion": "Clarify scope"},
+    {"level": "LOW", "category": "Governing Law",
+     "patterns": [r"governed\s+by.*?laws"],
+     "description": "Specifies jurisdiction",
+     "suggestion": "Verify acceptable"}
+]
+
+def detect_risks(text: str) -> List[Risk]:
+    risks = []
+    for pg in RISK_PATTERNS:
+        for pat in pg["patterns"]:
+            if re.search(pat, text.lower()) and not any(r.category == pg["category"] for r in risks):
+                risks.append(Risk(pg["level"], pg["category"], pg["description"], pg["suggestion"]))
+                break
+    return risks
+
+def calculate_risk_score(risks: List[Risk]) -> int:
+    return min(100, sum({"CRITICAL":40,"HIGH":20,"MEDIUM":10,"LOW":5}.get(r.level,0) for r in risks))
+
+print("✅ Risk engine ready")
+## 📚 LEGAL KNOWLEDGE + RAG
+LEGAL_KNOWLEDGE = [
+    {"title": "Section 10 - Valid Contracts",
+     "text": "Agreements are contracts if made by free consent of competent parties for lawful consideration."},
+    {"title": "Section 14 - Free Consent",
+     "text": "Consent is free when not caused by coercion, undue influence, fraud, misrepresentation, or mistake."},
+    {"title": "Section 15 - Coercion",
+     "text": "Coercion is threatening to commit an act forbidden by IPC to force agreement."},
+    {"title": "Section 17 - Fraud",
+     "text": "Fraud includes acts to deceive another party or induce them into contract."},
+    {"title": "Section 19 - Voidability",
+     "text": "Contracts caused by coercion, fraud or misrepresentation are voidable."},
+    {"title": "Section 23 - Lawful Consideration",
+     "text": "Consideration is lawful unless forbidden by law, fraudulent, or opposed to public policy."},
+    {"title": "Section 73 - Breach Compensation",
+     "text": "Party suffering breach entitled to compensation for loss that naturally arose."},
+    {"title": "Section 74 - Penalty Clauses",
+     "text": "Reasonable compensation only, not exceeding stipulated amount. Courts limit to actual loss."},
+    {"title": "Mohori Bibee (1903)",
+     "text": "Contract with minor is void ab initio, even if minor misrepresents age."},
+    {"title": "Hadley v Baxendale (1854)",
+     "text": "Damages limited to foreseeable losses at time of contracting."},
+    {"title": "Fateh Chand (1963)",
+     "text": "Penalty clauses unenforceable beyond reasonable compensation."},
+]
+
+class RAGSystem:
+    def __init__(self, knowledge: List[Dict]):
+        print("🔄 Initializing RAG...")
+        self.knowledge = knowledge
+        self.texts = [item["text"] for item in knowledge]
+        
+        print(f"Loading {Config.EMBEDDING_MODEL}...")
+        self.embedder = SentenceTransformer(Config.EMBEDDING_MODEL)
+        
+        print("Creating embeddings...")
+        embeddings = self.embedder.encode(self.texts, show_progress_bar=True)
+        
+        self.index = faiss.IndexFlatL2(embeddings.shape[1])
+        self.index.add(embeddings.astype('float32'))
+        print(f"✅ RAG ready with {len(knowledge)} laws")
+    
+    def retrieve(self, query: str, k: int = 5) -> List[Dict]:
+        query_emb = self.embedder.encode([query])
+        _, indices = self.index.search(query_emb.astype('float32'), k)
+        return [self.knowledge[i] for i in indices[0]]
+
+rag = RAGSystem(LEGAL_KNOWLEDGE)
+## 🤖 GEMINI AI ANALYZER
+def analyze_with_gemini(document: str, query: str, risks: List[Risk], laws: List[Dict]) -> str:
+    risks_text = "\n".join([f"{r.level} - {r.category}: {r.description}" for r in risks]) if risks else "No major risks."
+    laws_text = "\n\n".join([f"{law['title']}:\n{law['text']}" for law in laws])
+    
+    prompt = f"""You are KnowRights AI legal assistant.
+
+LEGAL CONTEXT:
+{laws_text}
+
+DOCUMENT:
+{document[:2000]}
+
+DETECTED RISKS:
+{risks_text}
+
+USER QUESTION:
+{query}
+
+Provide:
+1. Summary
+2. Legal issues (cite sections)
+3. Risk assessment
+4. Recommendations
+
+Include disclaimer about consulting lawyer."""
+    
+    try:
+        model = genai.GenerativeModel(Config.GEMINI_MODEL)
+        response = model.generate_content(prompt, generation_config=genai.GenerationConfig(
+            max_output_tokens=Config.MAX_OUTPUT_TOKENS, temperature=0.3))
+        return response.text
+    except Exception as e:
+        return f"Error: {e}"
+
+print("✅ Gemini analyzer ready")
+## 🎯 COMPLETE PIPELINE
+def analyze_contract(text: str = None, file_path: str = None, query: str = "Analyze this contract"):
+    print("="*80)
+    print("🏛️ KNOWRIGHTS - CONTRACT ANALYSIS")
+    print("="*80)
+    
+    start = time.time()
+    
+    # 1. Get text
+    print("\n📄 Step 1: Document Processing")
+    if file_path:
+        text = extract_text(file_path)
+    elif not text:
+        return print("❌ No document provided")
+    print(f"✅ {len(text)} characters")
+    
+    # 2. Language
+    print("\n🌍 Step 2: Language Detection")
+    query_lang = detect_language(query)
+    query_en = translate_text(query, query_lang, "en") if query_lang != "en" else query
+    print(f"✅ Detected: {query_lang}")
+    
+    # 3. Risks
+    print("\n🚨 Step 3: Risk Detection")
+    risks = detect_risks(text)
+    score = calculate_risk_score(risks)
+    print(f"✅ {len(risks)} risks | Score: {score}/100")
+    
+    # 4. Legal retrieval
+    print("\n📚 Step 4: Legal Retrieval")
+    laws = rag.retrieve(query_en, k=5)
+    print(f"✅ {len(laws)} laws")
+    
+    # 5. AI analysis
+    print("\n🤖 Step 5: AI Analysis")
+    analysis = analyze_with_gemini(text, query_en, risks, laws)
+    print("✅ Complete")
+    
+    # 6. Translate back
+    if query_lang != "en":
+        print(f"\n🔄 Step 6: Translation")
+        analysis = translate_text(analysis, "en", query_lang)
+    
+    # Display
+    elapsed = time.time() - start
+    print("\n" + "="*80)
+    print(f"🎯 Risk Score: {score}/100")
+    if score >= 80: print("🚨 EXTREME RISK")
+    elif score >= 50: print("⚠️ HIGH RISK")
+    elif score >= 20: print("⚠️ MODERATE RISK")
+    else: print("✅ LOW RISK")
+    
+    print("\n📋 Risks:")
+    for r in risks:
+        print(f"{r.level}: {r.category} - {r.description}")
+    
+    print("\n🤖 AI ANALYSIS:\n")
+    print(analysis)
+    print("\n" + "="*80)
+    print(f"⏱️ Time: {elapsed:.1f}s")
+    print("="*80)
+    
+    return {'text': text, 'risks': risks, 'score': score, 'laws': laws, 'analysis': analysis}
+
+print("✅ Pipeline ready!")
+## 🎬 DEMO
+# Sample contract
+SAMPLE = """EMPLOYMENT AGREEMENT
+
+Employee agrees to unlimited liability for any actions.
+Company may terminate at any time without cause.
+Employee shall not compete for 5 years globally.
+All IP belongs to Company.
+Agreement automatically renews yearly.
+Governed by Delaware law."""
+
+result = analyze_contract(text=SAMPLE, query="Is this safe to sign?")
+## 📤 Upload Your Contract
+from google.colab import files
+uploaded = files.upload()
+if uploaded:
+    filename = list(uploaded.keys())[0]
+    result = analyze_contract(file_path=filename)
+---
+
+## ✅ Part 1 Complete!
+
+**What you have:**
+- Contract analysis in 5 seconds
+- Risk detection with 7 patterns
+- Legal citations from Indian Contract Act
+- AI explanations
+- 7-language support
+
+**Next:** Part 2 will add interactive HTML, Q&A chat, advanced features!
+
+---
